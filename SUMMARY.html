@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flaky Network Protocol</title>
+    <style>
+        body { font-family: 'Helvetica', sans-serif; line-height: 1.6; max-width: 800px; margin: 40px auto; color: #1a1a1a; padding: 20px; }
+        h1, h2 { color: #0056b3; }
+        .box { background: #f4f4f9; border-left: 5px solid #0056b3; padding: 15px; margin-bottom: 20px; }
+        code { background: #e8e8e8; padding: 3px 6px; border-radius: 3px; font-family: monospace; }
+        ul { margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Protocol Architecture Summary</h1>
+    
+    <div class="box">
+        <h2>1. The Big Picture</h2>
+        <p>This project is basically a custom UDP protocol written in C++ that tries to get video frames across a bad network as fast as possible without losing them. The hardest part was keeping the playout delay low while making sure we don't accidentally send more than double the original bandwidth. I used a token bucket to carefully manage how much extra data I was sending so it stays right under that 2.0x limit.</p>
+    </div>
+
+    <div class="box">
+        <h2>2. Packet Layout</h2>
+        <p>The normal frame from the harness is 164 bytes (4 bytes for the sequence number and 160 for the payload). Since I can only send about 320 bytes per frame, I can't just send two full packets every time. Instead, I combined them into a single custom packet to save space on headers:</p>
+        <ul>
+            <li><strong>Standard Packet (162 bytes)</strong>: I shrank the sequence number down to 2 bytes. The highest bit of this number acts as a flag to say if there's a second payload attached. Then comes the 160-byte payload.</li>
+            <li><strong>Packed Packet (324 bytes)</strong>: If that flag is set to 1, the packet just tacks on another 2-byte sequence number and another 160-byte payload right at the end.</li>
+        </ul>
+        <p>This setup lets me squeeze two frames into a single UDP packet without going over the strict budget.</p>
+    </div>
+
+    <div class="box">
+        <h2>3. How the Sender Works</h2>
+        <p>The sender just keeps an array of all the old frames. To stay under the bandwidth limit, it uses a token bucket system where it gets 315 tokens per tick.</p>
+        <ul>
+            <li><strong>Sending Extra Data:</strong> Whenever it has at least 324 tokens saved up (which is almost all the time), it sends a Packed Packet.</li>
+            <li><strong>Picking What to Send:</strong> First, it checks if the receiver sent a NACK asking for a missing frame. If there's a NACK, it sends that frame. If everything is fine, it just grabs the frame from 3 steps ago and sends that. This simple trick fixes most short dropouts without even needing to wait for a NACK.</li>
+        </ul>
+    </div>
+
+    <div class="box">
+        <h2>4. How the Receiver Works</h2>
+        <p>The receiver code ended up being super simple. It turns out the harness player doesn't care if you give it frames early, it just cares that they aren't late.</p>
+        <ul>
+            <li><strong>Passing Frames:</strong> Whenever a packet comes in, the receiver unpacks it, checks if it has seen those sequence numbers before, and if not, it instantly forwards them to the player. No messy timers or holding buffers needed.</li>
+            <li><strong>Asking for Missing Frames:</strong> It remembers the highest sequence number it has received. Every 20ms or so, it checks if it skipped any numbers recently. If it sees a gap, it packs those missing numbers into a small packet and shoots it back to the sender as a NACK.</li>
+        </ul>
+    </div>
+</body>
+</html>
